@@ -13,20 +13,66 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v3
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v3
+    - name: Install SSH key
+      uses: webfactory/ssh-agent@v0.7.0
       with:
-        node-version: 18
+        ssh-private-key: ${{ secrets.PRIVATE_KEY }}
 
-    - name: Install Dependencies
-      run: npm install
+    - name: Configure known hosts
+      run: |
+        mkdir -p ~/.ssh
+        ssh-keyscan -H ${{ secrets.HOST }} >> ~/.ssh/known_hosts
 
     - name: Deploy to VM
       env:
         HOST: ${{ secrets.HOST }}
         USER: ${{ secrets.USER }}
-        PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
       run: |
-        echo "${PRIVATE_KEY}" > private_key.pem
-        chmod 600 private_key.pem
-        ssh -o StrictHostKeyChecking=no -i private_key.pem $USER@$HOST "pm2 stop all || true && pm2 start index.js --name api --watch"
+        # Copy files to VM
+        echo "Copying files to VM..."
+        scp -r . ${USER}@${HOST}:/home/${USER}/api || { echo "SCP failed"; exit 1; }
+        
+        # SSH commands to set up the application
+        echo "Setting up application on VM..."
+        ssh ${USER}@${HOST} << 'EOF'
+        set -e # Exit on error
+        
+        # Create directory if it doesn't exist
+        mkdir -p /home/${USER}/api
+        
+        # Navigate to app directory
+        cd /home/${USER}/api
+        
+        # Install Node.js if not present
+        if ! command -v node &> /dev/null; then
+          echo "Installing Node.js..."
+          sudo apt-get update
+          curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+        fi
+        
+        # Install PM2 if not present
+        if ! command -v pm2 &> /dev/null; then
+          echo "Installing PM2..."
+          sudo npm install pm2 -g
+        fi
+        
+        # Install dependencies
+        echo "Installing dependencies..."
+        npm install --production
+        
+        # Stop existing instance if running
+        echo "Managing PM2 process..."
+        pm2 delete api || true
+        
+        # Start server.js instead of index.js
+        echo "Starting server..."
+        pm2 start server.js --name api
+        
+        # Save and set up startup script
+        echo "Configuring PM2 startup..."
+        pm2 save
+        sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u ${USER} --hp /home/${USER}
+        
+        echo "Deployment completed successfully!"
+        EOF
