@@ -1,0 +1,40 @@
+name: Deploy API
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+
+    - name: Install Dependencies
+      run: npm install
+
+    - name: Deploy to VM
+      env:
+        HOST: ${{ secrets.HOST }}
+        USER: ${{ secrets.USER }}
+        PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+      run: |
+        # Fix 
+        echo "${PRIVATE_KEY}" | sed 's/\\n/\'$'\n/g' > private_key.pem
+        chmod 600 private_key.pem
+
+        # Add the server to known hosts to avoid prompt
+        ssh-keyscan -H $HOST >> ~/.ssh/known_hosts
+
+        # Connect to VM and run the server
+        ssh -o StrictHostKeyChecking=no -i private_key.pem $USER@$HOST "
+          pm2 stop all || true && pm2 start server.js --name api --watch
+        "
